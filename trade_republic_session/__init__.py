@@ -1,4 +1,4 @@
-"""Headless Trade Republic web-session login + cookie refresh (for pytr)."""
+"""Unattended Trade Republic login (sealed creds + web re-login bridge) over pytr."""
 
 from trade_republic_session.login import main
 

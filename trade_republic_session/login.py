@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Trade Republic web-session login + cookie refresh.
+"""Trade Republic login — unattended + web-UI wrapper around pytr.
 
-Trade Republic has no public API. The community library `pytr` can read your
-portfolio/timeline, but the hard part is *getting and keeping a logged-in session
-on a headless server*, because TR sits behind an AWS WAF. This tool does exactly
-that and nothing else: it mints / refreshes the web-session cookie file that pytr
-(and anything built on it) resumes from.
+``pytr`` already logs into Trade Republic (it gets the AWS-WAF token, takes your
+phone/PIN, handles the 4-digit/SMS code, and saves the cookie). If you just want to
+log in on your own machine, use ``pytr login`` — you don't need this. This wrapper
+adds only two things, for servers/dashboards: it resolves credentials from a
+TPM-sealed blob or env (no plaintext file / prompt) so a systemd unit can run it
+unattended, and it offers a ``--ui-dir`` file bridge so a sandboxed web UI can drive
+the interactive login. It writes the same web-session cookie pytr resumes from.
 
-    python -m trade_republic_session            # interactive login
+    python -m trade_republic_session            # login (creds from sealed blob/env/prompt)
     python -m trade_republic_session --force    # ignore a still-valid session
 
 The cookie is written to ``secrets/cookies.txt`` by default (override with

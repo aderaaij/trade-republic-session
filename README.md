@@ -1,46 +1,44 @@
 # trade-republic-session
 
-Mint and refresh a **Trade Republic** web-session cookie on a **headless server**,
-past the **AWS-WAF challenge** — so [`pytr`](https://github.com/pytr-org/pytr) (and
-anything built on it) can read your portfolio without you logging in by hand each time.
+A thin layer over [`pytr`](https://github.com/pytr-org/pytr) that runs **Trade Republic
+login unattended** (TPM-sealed credentials, systemd) and lets you **re-authenticate it
+from a web UI**. It writes the same session cookie `pytr` uses.
 
-Trade Republic has no public API. `pytr` already handles reading data; the part
-everyone gets stuck on is **authentication on a server with no browser**. This tool
-does just that one job, cleanly:
+> **If you just want to log into TR on your own machine, use `pytr login` directly.**
+> It already handles the AWS-WAF, your phone/PIN, the 4-digit (or SMS) code, and saving
+> the cookie. This project does **not** reinvent any of that — it only adds value for
+> **headless servers** and **dashboards**, where the interactive `pytr login` is awkward.
 
-```bash
-python -m trade_republic_session          # interactive login → writes secrets/cookies.txt
-python -m trade_republic_session --force  # ignore a still-valid session, log in fresh
-```
+## What `pytr` already does (and this reuses, doesn't replace)
 
-It is **read-session only** by intent: it produces a cookie. It never places orders or
-moves money — and neither can `pytr` with it beyond what your account allows.
+- Obtains the **AWS-WAF token** (`playwright` default, or `awswaf`) — pytr's code.
+- Prompts for / reads **phone + PIN**, runs the web login, takes the **4-digit code with
+  SMS fallback**, and **saves + resumes** the cookie.
 
-## Why this exists
+So the login itself is pytr. This wrapper is worth installing only if you need one of the
+two things below.
 
-Logging into TR programmatically means clearing three hurdles, all handled here:
+## What this adds
 
-1. **The AWS WAF.** TR sits behind an AWS WAF that blocks naive HTTP logins. `pytr`
-   can obtain a token two ways and this tool exposes both:
-   - `--waf playwright` (default) — headless Chromium solves the challenge. Most
-     reliable. Run `playwright install chromium` once.
-   - `--waf awswaf` — a pure-Python solver (no browser, lighter, but flakier).
-   - `--waf <token>` — a token you captured yourself.
-2. **The confirmation code.** TR pushes a **4-digit code** to its app (or SMS). You
-   type it once; the session then persists for days.
-   > **Dead end worth knowing:** an external authenticator's **TOTP code does _not_
-   > work** for TR web login — TR's confirm endpoint rejects it. Only the push/SMS
-   > code works. (`--totp-secret` is kept for the rare linked-authenticator case, but
-   > expect the interactive flow.)
-3. **Session persistence.** The result is a single cookie file, `chmod 0600`, that
-   `pytr` resumes. TR sessions are short-lived (a few days), so re-run this when reads
-   start failing.
+1. **Unattended, sealed credentials.** `pytr` reads phone/PIN from an interactive prompt
+   or a **plaintext** credentials file. This resolves them from a **TPM-sealed blob**
+   (`$CREDENTIALS_DIRECTORY/tr-secrets`, mounted by systemd `LoadCredentialEncrypted=`)
+   or env vars — no plaintext on disk, no prompt — so a scheduled/`oneshot` unit can run it.
+2. **A web re-login bridge (`--ui-dir`).** A small file protocol (`status.json` + `code`,
+   with `RESEND`/`CANCEL` sentinels) so a **sandboxed web app** can drive the interactive
+   login — show progress, collect the 4-digit code — without the browser ever touching
+   your credentials. This is the genuinely novel piece; it isn't in pytr.
+
+Plus minor conveniences: the cookie is written `chmod 0600`, an `--on-success` hook,
+`--force`, and `--cookies-file` / `TR_COOKIES_FILE`.
+
+If neither (1) nor (2) applies to you, **you don't need this — use `pytr login`.**
 
 ## Install
 
 ```bash
-pip install -e .            # or: pip install trade-republic-session  (once published)
-playwright install chromium # once, for the default --waf playwright
+pip install -e .            # depends only on pytr
+playwright install chromium # once, for pytr's default WAF strategy
 ```
 
 Python ≥ 3.10.
@@ -48,44 +46,44 @@ Python ≥ 3.10.
 ## Usage
 
 ```bash
-# Interactive (prompts for phone + PIN if not provided, then the 4-digit code):
-python -m trade_republic_session
-# or the console script:
+# Unattended login (creds from sealed blob / env; cookie to secrets/cookies.txt):
 tr-session
+#   or: python -m trade_republic_session
 
-# Choose where the cookie lives (default: secrets/cookies.txt):
-tr-session --cookies-file ~/.config/tr/cookies.txt
-#   …or set TR_COOKIES_FILE.
-
-# Run something after a successful login (restart a service, kick a sync, …):
+tr-session --force                                  # ignore a still-valid session
+tr-session --cookies-file ~/.config/tr/cookies.txt  # or set TR_COOKIES_FILE
 tr-session --on-success "systemctl --user restart my-tr-reader"
 ```
 
-Then point `pytr` at the same file:
+Then point `pytr` at the same cookie:
 
 ```python
 from pytr.api import TradeRepublicApi
 tr = TradeRepublicApi(phone_no=PHONE, pin=PIN, cookies_file="secrets/cookies.txt")
-assert tr.resume_websession()      # no interactive login needed
+assert tr.resume_websession()   # no interactive login needed
 ```
 
-### Credential resolution
+### Credential resolution (the unattended bit)
 
-Phone + PIN (and optional TOTP secret) are resolved in order:
+Resolved in order:
 
-1. **TPM-sealed blob** — `$CREDENTIALS_DIRECTORY/tr-secrets` (KEY=VALUE lines), as
-   mounted by a systemd unit via `LoadCredentialEncrypted=` (see below).
-2. **Environment** — `TR_PHONE_NO`, `TR_PIN`, `TR_TOTP_SECRET`.
-3. **Interactive prompt** for anything still missing (PIN is read hidden).
+1. **TPM-sealed blob** — `$CREDENTIALS_DIRECTORY/tr-secrets` (KEY=VALUE lines), mounted by
+   systemd via `LoadCredentialEncrypted=`.
+2. **Environment** — `TR_PHONE_NO`, `TR_PIN`, optional `TR_TOTP_SECRET`.
+3. **Interactive prompt** for anything missing.
 
-Keys: `TR_PHONE_NO` (e.g. `+4912345678`), `TR_PIN`, optional `TR_TOTP_SECRET`,
-`TR_LOCALE` (default `en`), `TR_WAF` (default `playwright`).
+Other env: `TR_LOCALE` (default `en`), `TR_WAF` (passed straight to pytr; default
+`playwright`).
 
-## The web re-login bridge (optional pattern)
+> **Note on TOTP:** an external authenticator's code does **not** work for TR web login —
+> TR's confirm endpoint rejects it; only the push/SMS code does. `--totp-secret` is kept
+> for the rare linked-authenticator case, but expect the interactive flow.
 
-Re-authenticating a **host** process (it needs your phone/PIN and a browser) from a
-**sandboxed web UI** (e.g. a containerised dashboard) is a recurring problem. `--ui-dir`
-implements a small file-based bridge for it:
+## The web re-login bridge (`--ui-dir`)
+
+The one thing here that pytr can't do. Re-authenticating a **host** process (it needs your
+phone/PIN and a browser for the WAF) from a **sandboxed web UI** (e.g. a containerised
+dashboard) needs an out-of-band channel. `--ui-dir` is that channel:
 
 ```bash
 tr-session --ui-dir /run/tr-login --on-success "..."
@@ -93,18 +91,14 @@ tr-session --ui-dir /run/tr-login --on-success "..."
 
 - The process writes its phase to `<dir>/status.json` (atomic): `starting` →
   `awaiting_code` → `verifying` → `syncing` → `ok` (or `error` / `cancelled`).
-- It reads the 4-digit code from `<dir>/code`; the sentinels `RESEND` (send SMS) and
-  `CANCEL` are also accepted.
+- It reads the 4-digit code from `<dir>/code`; `RESEND` (send SMS) and `CANCEL` are also
+  accepted.
 
 Your web layer polls `status.json` and writes `code`. Trigger this host process from a
-file-watch (e.g. a systemd `.path` unit) so the browser never touches credentials. The
-whole login (initiate → confirm) runs in one process so the WAF token and session stay
-in memory.
+file-watch (e.g. a systemd `.path` unit) so the browser never sees credentials. The whole
+login runs in one process so the WAF token and session stay in memory.
 
 ## Running unattended (systemd + TPM)
-
-Keep secrets off disk in plaintext by sealing them to the TPM and mounting them only
-into the unit:
 
 ```ini
 # ~/.config/systemd/user/tr-login.service  (Type=oneshot)
@@ -127,23 +121,21 @@ shred -u /dev/shm/tr
 
 ## Security
 
-- **`secrets/cookies.txt` is a live session credential.** It is created `0600` and the
-  whole `secrets/` directory is gitignored. Treat it like a password.
-- Prefer the TPM-sealed-creds path over plaintext env files for phone/PIN.
-- This tool reads credentials and writes a cookie — it makes no trades and moves no
-  money.
+- **`secrets/cookies.txt` is a live session credential** — created `0600`, and the whole
+  `secrets/` dir is gitignored. Treat it like a password.
+- Prefer the TPM-sealed path over a plaintext credentials file for phone/PIN.
+- This tool reads credentials and writes a cookie; it makes no trades and moves no money.
 
 ## Caveats
 
-- **Unofficial.** TR has no public API; this builds on the reverse-engineered `pytr`.
-  Use at your own risk and within TR's terms.
-- **Fragile by nature.** TR and the AWS WAF change; logins can break and the `awswaf`
-  solver is the flakier path (prefer `playwright`). Best-effort, not a guarantee.
-- **Heavyweight default.** The `playwright` strategy needs a Chromium download.
+- **Unofficial.** TR has no public API; everything here builds on the reverse-engineered
+  `pytr`. Use at your own risk and within TR's terms.
+- **Fragile.** TR and the WAF change; logins can break (the `awswaf` strategy is the
+  flakier one — prefer `playwright`). Best-effort.
 
 ## Credits
 
-Built on [`pytr`](https://github.com/pytr-org/pytr), which does the Trade Republic
-protocol and the WAF-token strategies. This project is just the headless login/session
-lifecycle around it. Released into the **public domain** ([The Unlicense](https://unlicense.org))
-— no copyright, use it however you like.
+All the heavy lifting — the Trade Republic protocol, the AWS-WAF token, the login flow — is
+[`pytr`](https://github.com/pytr-org/pytr). This project is only the unattended-credentials
+and web-re-login wrapper around it. Released into the **public domain**
+([The Unlicense](https://unlicense.org)) — no copyright, use it however you like.

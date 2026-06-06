@@ -1,7 +1,7 @@
 [project]
 name = "trade-republic-session"
 version = "0.1.0"
-description = "Headless Trade Republic web-session login + cookie refresh (past the AWS-WAF challenge), usable by pytr."
+description = "A thin layer over pytr: run Trade Republic login unattended (TPM-sealed creds) and re-authenticate it from a web UI."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Unlicense" }

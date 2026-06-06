@@ -145,4 +145,5 @@ shred -u /dev/shm/tr
 
 Built on [`pytr`](https://github.com/pytr-org/pytr), which does the Trade Republic
 protocol and the WAF-token strategies. This project is just the headless login/session
-lifecycle around it. MIT licensed.
+lifecycle around it. Released into the **public domain** ([The Unlicense](https://unlicense.org))
+— no copyright, use it however you like.
